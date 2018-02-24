@@ -10,7 +10,7 @@ import spark.jobserver.JobManagerActor.{SparkContextAlive, SparkContextDead, Spa
 import spark.jobserver.util.SparkJobUtils
 
 import scala.collection.mutable
-import scala.concurrent.Await
+import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success, Try}
 import spark.jobserver.common.akka.InstrumentedActor
 import akka.pattern.gracefulStop
@@ -168,8 +168,12 @@ class LocalContextSupervisorActor(dao: ActorRef, dataManagerActor: ActorRef) ext
       if (contexts contains name) {
         logger.info("Shutting down context {}", name)
         try {
-          val stoppedCtx = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
-          Await.result(stoppedCtx, contextDeletionTimeout + 1 seconds)
+          val jobManagerStop = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
+          val jobResultStop = gracefulStop(contexts(name)._2, contextDeletionTimeout seconds)
+
+          val stops = Future.sequence(List(jobManagerStop, jobResultStop))
+          Await.result(stops, contextDeletionTimeout + 1 seconds)
+
           contexts.remove(name)
           sender ! ContextStopped
         }
