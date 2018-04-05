@@ -13,7 +13,7 @@ get_abs_script_path
 
 . $appdir/setenv.sh
 
-GC_OPTS="-XX:+UseConcMarkSweepGC
+GC_OPTS="-XX:+UseG1GC
          -verbose:gc -XX:+PrintGCTimeStamps
          -XX:MaxPermSize=512m
          -XX:+CMSClassUnloadingEnabled "
@@ -60,6 +60,8 @@ fi
 
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN --driver-memory $JOBSERVER_MEMORY
       --conf "spark.executor.extraJavaOptions=$LOGGING_OPTS"
+      --conf "spark.mesos.driver.constraints=node-type:compute-datastore"
+      --conf "spark.executor.extraJavaOptions=-XX:+UseG1GC"
       $SPARK_SUBMIT_OPTIONS
       --driver-java-options "$GC_OPTS $JAVA_OPTS $LOGGING_OPTS $CONFIG_OVERRIDES $SPARK_SUBMIT_JAVA_OPTIONS"
       $JAR_FILE $3 $4 $CONF_FILE'

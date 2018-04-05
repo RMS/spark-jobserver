@@ -5,6 +5,7 @@ import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
 
 import akka.actor._
+import akka.pattern.ask
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
 import akka.util.Timeout
@@ -16,10 +17,11 @@ import scala.util.{Failure, Success, Try}
 import scala.sys.process._
 import spark.jobserver.common.akka.InstrumentedActor
 
-import scala.concurrent.Await
+import scala.concurrent.{Await, Future}
 import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
+import spark.jobserver.JobManagerActor.{GetSparkWebUIUrl, NoSparkWebUI, SparkContextDead, SparkWebUIUrl}
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
 
 /**
@@ -114,6 +116,21 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     case ListContexts =>
       sender ! contexts.keys.toSeq
 
+    case GetSparkWebUI(name) =>
+      contexts.get(name) match {
+        case Some((actor, _)) =>
+          val future = (actor ? GetSparkWebUIUrl)(30.seconds)
+          val originator = sender
+          future.collect {
+            case SparkWebUIUrl(webUi) => originator ! WebUIForContext(name, Some(webUi))
+            case NoSparkWebUI => originator ! WebUIForContext(name, None)
+            case SparkContextDead =>
+              logger.info("SparkContext {} is dead", name)
+              originator ! NoSuchContext
+          }
+        case _ => sender ! NoSuchContext
+      }
+
     case AddContext(name, contextConfig) =>
       val originator = sender()
       val mergedConfig = contextConfig.withFallback(defaultContextConfig)
@@ -164,8 +181,15 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         val contextActorRef = contexts(name)._1
         cluster.down(contextActorRef.path.address)
         try {
-          val stoppedCtx = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
-          Await.result(stoppedCtx, contextDeletionTimeout + 1 seconds)
+          val jobManagerStop = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
+          val jobResultStop = gracefulStop(contexts(name)._2, contextDeletionTimeout seconds)
+
+          val stops = Future.sequence(List(jobManagerStop, jobResultStop))
+
+          Await.result(stops, contextDeletionTimeout + 1 seconds)
+
+          logger.info("Stopped Job Manager Actor {}", name)
+          logger.info("Stopped Job Result Actor {}", name)
           sender ! ContextStopped
         }
         catch {
