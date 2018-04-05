@@ -277,34 +277,46 @@ class JobManagerActor(daoActor: ActorRef)
       None
     }
 
-    val daoAskTimeout = Timeout(3 seconds)
     // TODO: refactor so we don't need Await, instead flatmap into more futures
-    val resp = Await.result(
-      (daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName))(daoAskTimeout).
-        mapTo[JobDAOActor.LastUploadTimeAndType],
-      daoAskTimeout.duration)
 
-    val lastUploadTimeAndType = resp.uploadTimeAndType
-    if (!lastUploadTimeAndType.isDefined) return failed(NoSuchApplication)
-    val (lastUploadTime, binaryType) = lastUploadTimeAndType.get
+    // We still need a timeout :(
+    implicit val daoAskTimeout = Timeout(60 seconds)
 
-    val jobId = java.util.UUID.randomUUID().toString()
-    val jobContainer = factory.loadAndValidateJob(appName, lastUploadTime,
-                                                  classPath, jobCache) match {
-      case Good(container) => container
-      case Bad(JobClassNotFound) => return failed(NoSuchClass)
-      case Bad(JobWrongType) => return failed(WrongJobType)
-      case Bad(JobLoadError(ex)) => return failed(JobLoadingError(ex))
-    }
+    logger.info(s"Asking JobDAOActor to GetLastUploadTimeAndType for app $appName")
+    val f = daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName)
 
-    // Automatically subscribe the sender to events so it starts getting them right away
-    resultActor ! Subscribe(jobId, sender, events)
-    statusActor ! Subscribe(jobId, sender, events)
+    val lastUploadTimeAndType = f.mapTo[JobDAOActor.LastUploadTimeAndType]
+    val resp = lastUploadTimeAndType
+      .map {
+        l =>
+          val lastUploadTimeAndType = l.uploadTimeAndType
+          if (lastUploadTimeAndType.isEmpty) return failed(NoSuchApplication)
+          val (lastUploadTime, binaryType) = lastUploadTimeAndType.get
 
-    val binInfo = BinaryInfo(appName, binaryType, lastUploadTime)
-    val jobInfo = JobInfo(jobId, contextName, binInfo, classPath, DateTime.now(), None, None)
+          val jobId = java.util.UUID.randomUUID().toString
+          val jobContainer = factory.loadAndValidateJob(appName, lastUploadTime,
+            classPath, jobCache) match {
+            case Good(container) => container
+            case Bad(JobClassNotFound) => return failed(NoSuchClass)
+            case Bad(JobWrongType) => return failed(WrongJobType)
+            case Bad(JobLoadError(ex)) => return failed(JobLoadingError(ex))
+          }
 
-    Some(getJobFuture(jobContainer, jobInfo, jobConfig, sender, jobContext, sparkEnv))
+          // Automatically subscribe the sender to events so it starts getting them right away
+          resultActor ! Subscribe(jobId, sender, events)
+          statusActor ! Subscribe(jobId, sender, events)
+
+          val binInfo = BinaryInfo(appName, binaryType, lastUploadTime)
+          val jobInfo = JobInfo(jobId, contextName, binInfo, classPath, DateTime.now(), None, None)
+
+          (jobContainer, jobInfo)
+      }(executionContext)
+      .flatMap {
+        t =>
+          getJobFuture(t._1, t._2, jobConfig, sender, jobContext, sparkEnv)
+      }(executionContext)
+
+    Some(resp)
   }
 
   private def getJobFuture(container: JobContainer,
