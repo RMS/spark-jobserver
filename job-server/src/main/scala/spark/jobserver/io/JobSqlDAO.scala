@@ -185,7 +185,14 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCacher {
       .sortBy(_.uploadTime.desc)
       .map(b => (b.uploadTime, b.binaryType)).result
       .map{_.headOption.map(b => (convertDateSqlToJoda(b._1), BinaryType.fromString(b._2)))}
-    Await.result(db.run(query), 60 seconds)
+
+    val start = System.currentTimeMillis()
+    val result = Await.result(db.run(query), 60 seconds)
+    val end = System.currentTimeMillis()
+    val total = end - start
+    logger.info(s"Ran Query in ($total ms)\n$query\n\t${result.toString}")
+
+    result
   }
 
   private def calculateBinaryHash(binBytes: Array[Byte]): Array[Byte] = {
