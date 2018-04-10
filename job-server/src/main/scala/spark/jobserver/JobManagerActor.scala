@@ -268,7 +268,6 @@ class JobManagerActor(daoActor: ActorRef)
     import akka.util.Timeout
     import spark.jobserver.context._
 
-    import scala.concurrent.Await
     import scala.concurrent.duration._
 
     def failed(msg: Any): Option[Future[Any]] = {
@@ -277,17 +276,16 @@ class JobManagerActor(daoActor: ActorRef)
       None
     }
 
-    // TODO: refactor so we don't need Await, instead flatmap into more futures
-
-    // We still need a timeout :(
-    implicit val daoAskTimeout = Timeout(60 seconds)
+    val daoAskTimeout = Timeout(60 seconds)
 
     logger.info(s"Asking JobDAOActor to GetLastUploadTimeAndType for app $appName")
-    val f = daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName)
+    val lastUploadTimeAndType =
+      (daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName))(daoAskTimeout)
+        .mapTo[JobDAOActor.LastUploadTimeAndType]
 
-    val lastUploadTimeAndType = f.mapTo[JobDAOActor.LastUploadTimeAndType]
+    val origSender = sender
     val resp = lastUploadTimeAndType
-      .map {
+      .flatMap {
         l =>
           val lastUploadTimeAndType = l.uploadTimeAndType
           if (lastUploadTimeAndType.isEmpty) return failed(NoSuchApplication)
@@ -303,17 +301,13 @@ class JobManagerActor(daoActor: ActorRef)
           }
 
           // Automatically subscribe the sender to events so it starts getting them right away
-          resultActor ! Subscribe(jobId, sender, events)
-          statusActor ! Subscribe(jobId, sender, events)
+          resultActor ! Subscribe(jobId, origSender, events)
+          statusActor ! Subscribe(jobId, origSender, events)
 
           val binInfo = BinaryInfo(appName, binaryType, lastUploadTime)
           val jobInfo = JobInfo(jobId, contextName, binInfo, classPath, DateTime.now(), None, None)
 
-          (jobContainer, jobInfo)
-      }(executionContext)
-      .flatMap {
-        t =>
-          getJobFuture(t._1, t._2, jobConfig, sender, jobContext, sparkEnv)
+          getJobFuture(jobContainer, jobInfo, jobConfig, origSender, jobContext, sparkEnv)
       }(executionContext)
 
     Some(resp)

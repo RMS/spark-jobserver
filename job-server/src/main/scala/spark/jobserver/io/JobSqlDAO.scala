@@ -190,7 +190,7 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCacher {
     val result = Await.result(db.run(query), 60 seconds)
     val end = System.currentTimeMillis()
     val total = end - start
-    logger.info(s"Ran Query in ($total ms)\n$query\n\t${result.toString}")
+    logger.info(s"$appName query ran in $total ms\n\t${result.toString}")
 
     result
   }
